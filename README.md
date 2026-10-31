@@ -8,7 +8,7 @@ Thanks to Luboš, GmoLargey, and others for their work on [WinlatorXR](https://g
 
 > ** NOTE: This is a 'breaking changes' fork of the parent project, and future updates to it will be required in order to stay up to date with its PCVR equivalent **
 
-** Please do support the developers of the PCVR mod on Ko-Fi ( ko-fi.com/buckzor ) , this wouldn't be possible without their hard work! **
+**Please do support the developers of the PCVR mod on Ko-Fi ( ko-fi.com/buckzor ) , this wouldn't be possible without their hard work!**
 
 # Original Black & White VR Mod ReadMe Below
 
