@@ -48,7 +48,7 @@ has every field.
 | The bridge to Direct3D 11 | `gpu_bridge.cpp` copies Direct3D 9 textures into a Direct3D 11 device for the runtime | None. There is no runtime to hand a texture to |
 | The renderer | dxwrapper turns Direct3D 7 into Direct3D 9Ex, or the mod makes DirectDraw 7 and Direct3D 7 itself on Vulkan | Plain DirectDraw 7 and Direct3D 7. The container handles the upgrade above the game |
 | The frame clock | `xrWaitFrame` paces the game | The red sync pixel. The mod echoes the frame id of the last packet into the top left corner |
-| Stereo | Two eye pictures, one swapchain for each eye | Two halves of one window buffer, side by side. Mono and alternate eye rendering are the other two choices |
+| Stereo | Two eye pictures, one swapchain for each eye | Mono first: one picture to both eyes, with the head on the camera. Stereo comes later, either as two halves of one window buffer or as one eye for each frame, from a measurement on the device |
 | The cards and the panels | Quad layers of OpenXR, each with its own swapchain | One video channel only. The mod composites each card into the frame of the game |
 | The cut scene window | A quad for each eye and four black walls, as layers | The same picture, composited into the frame |
 | The controllers | One OpenXR action set, synced once a frame | 28 floats and 19 characters of `T` and `F` in the inbound packet |
@@ -100,9 +100,10 @@ it.
   CPU, as BGRA pixels. The surfaces of the game also live in the memory of the
   CPU. So a card goes into the frame as a copy of pixels, in both halves under
   side by side.
-- **Three readers of the pointer become four.** The pointer has readers in
-  window pixels, in render pixels and in the screen of the game camera. Side
-  by side in one buffer adds the half that a pixel belongs to.
+- **The pointer gains a reader when stereo arrives.** The pointer has readers
+  in window pixels, in render pixels and in the screen of the game camera.
+  Side by side in one buffer adds the half that a pixel belongs to. Mono does
+  not, which is one reason the port is built on mono.
 - **Nothing is proven on the device yet.** No part of this fork has run in a
   container. Each item of the plan says what a desktop test can show and what
   only the headset can.

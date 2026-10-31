@@ -11,7 +11,7 @@ in `CURRENT_STATUS.md`. This file is the plan and the decisions.
 | --- | --- |
 | Game, version, patch level | Black & White (2001), official patch 1.10, then 1.20, then the unofficial patch v1.42. No other patch and no other mod |
 | Distribution | The owner's own copy. No store sells the game |
-| Install path | Kept in `local\game-path.txt` by `.\dev.ps1 setup` |
+| Install path | `E:\tmp\Q3Mods\BnW` on the PC, a copy of the install that runs on the Quest 3. A contributor's own path is kept in `local\game-path.txt` by `.\dev.ps1 setup` |
 | Bitness | 32 bit |
 | Renderer | DirectDraw 7 and Direct3D 7. Every draw path submits screen space vertices, FVF `0x01C4` |
 | Engine | Lionhead's own (`LH3DRender`, `LH3DTech`) |
@@ -29,9 +29,9 @@ in `CURRENT_STATUS.md`. This file is the plan and the decisions.
 | Real VR port or injection port | A real VR port. XrApi, 6DOF, poses straight into the game camera and the Hand |
 | XrApi version | 0.5. It is 0.4 plus the InputAPI listener at no cost, it is readable in a log, and the XrAPI UDP Tester simulates it |
 | Target headset | Quest 3 through WinlatorXR. Other headsets can work and are untested |
-| Presentation mode | Mono VR first (`MODE_VR=1`, `MODE_3D=0`). Then measure side by side against alternate eye rendering on the device and choose |
+| Presentation mode | Mono VR (`MODE_VR=1`, `MODE_3D=0`). One image to both eyes, with the head driving the camera. It is the mode that the port is built on and the first mode that it ships. Stereo comes later, as the last stage, from a measurement of alternate eye rendering against side by side |
 | Ship a non-VR mode | To decide after the first measurement. It needs no camera work, so it stays available as a comfort and performance choice |
-| Container resolution | TBD. Start at 2800x1400 and report what the game accepts. A square resolution suits a headset panel, and the resolution of the container is the supersampling control |
+| Container resolution | 1400x1400 is the size to plan for, and a 4:3 size of about the same height where the game refuses a square one. 1280x720 is the default of WinlatorXR, and the plain game runs at it with no change to any container setting. The mod must still read the render size each frame and work at any size, because the resolution belongs to the player and is the supersampling control |
 | Framing | The God view: the land at the height of the waist. Hands in view, 1:1 |
 | Hands in view | Yes. Both. The hands are the Hand of the game |
 | Mouse motion needed from outside the process | No. The mod never moves the real mouse. It writes the state of the game's own `LHMouse` from inside the process |
@@ -99,6 +99,26 @@ global at `0x00ECA638`), as every draw of the game does. The cards are already
 drawn on the CPU as BGRA pixels, and the surfaces of the game are in the
 memory of the CPU, so a card reaches the frame as a copy of pixels.
 
+### What a resolution costs, and what a second eye costs
+
+Two measurements of the parent mod decide where the frame time goes, and they
+point the same way.
+
+The drawing of the game does not grow with the resolution. It measured 4.33 to
+6.52 ms at every size from 1280x720 to 2560x1440. The scene walk is nearly all
+of a frame, and a saving has to come from a cheaper walk and not from pixels.
+So a square resolution of 1400x1400 costs the game almost nothing against the
+default, and the player gets the quality.
+
+The cost that did grow with the resolution was the readback: a lock of the
+DirectDraw target and a write into an upload texture, 0.41 ms at 1280x720 and
+1.34 ms at 2560x1440, for each eye. This fork has no readback. The picture
+stays in the window that the runtime captures, so that cost is gone.
+
+What is left is the second scene walk. Side by side pays it, and mono and
+alternate eye rendering do not. That is why the mode is chosen from a
+measurement on the device and not from a preference.
+
 ### Decisions taken deliberately
 
 Record these so no session relitigates them.
@@ -111,6 +131,7 @@ Record these so no session relitigates them.
 | Process model | In the process of the game | No IPC, no second program to ship, start and reap |
 | Transport | XrApi 0.5, direct | OXRWXR and OpenComposite would carry the PCVR mod with no new code, and they cost heavily in performance for content that already needs a desktop GPU. A direct mod pays nothing for generality |
 | Presentation | Mono first, then measure side by side against alternate eye rendering | Mono isolates a camera fault from a stereo fault. The game is draw call bound, so one walk a frame can beat two |
+| The square resolution and the mode | 1400x1400 fits mono and alternate eye rendering. Side by side needs a width of 2800 for the same picture in each eye | Side by side cuts the width in two, so a square container gives each eye 700 by 1400. The recommended resolution follows the mode that the measurement picks |
 | Supersampling | The resolution of the container | The runtime filters when it samples the window down. It needs no code |
 | Settings | A menu inside the game | Editing an ini on a headset is painful. `debug_menu.cpp` is the start |
 | Frame cost | Measured on the device with Android and WinlatorXR tooling | The mod cannot see the compositor, the translation layers or the GPU, and that is where the time goes |
@@ -148,26 +169,43 @@ belongs in one place and not spread through the mod.
 
 ## 5. Milestones
 
-Each one leaves something testable, and each has a checkpoint that only the
-owner, the device or the hardware can answer. `CURRENT_STATUS.md` holds the
-live state of these.
+The stages in order. Each one leaves something testable, so a fault belongs to
+the stage that caused it. Each one ends at a checkpoint that only the owner,
+the device or the hardware can answer. `CURRENT_STATUS.md` says which of these
+are still open, and it is the only place that says so.
 
-- [ ] **0** Intake complete, this plan agreed
-- [ ] **1** The plain game runs in a container, and every workaround it needed
-      is written down
-- [ ] **2** The mod loads inside the container and writes a log whose first
-      line is the build stamp. A MinHook hook is proven under Box86 and Wine
-- [ ] **3** The window is borderless and fills the display, re-applied every
-      frame
-- [ ] **4** The XrApi client parses a packet captured on the device, and the
-      button table comes from a device log and not from a document
-- [ ] **5** The sync pixel is drawn last, 10 by 10, in every half
-- [ ] **6** Mono 6DOF head tracking feels locked. This is the big one
-- [ ] **7** The presentation mode is chosen from a measurement on the device
-- [ ] **8** The cards, the panels and the cut scene window are in the frame
-- [ ] **9** The hands are at the real hands, and the owner confirms the full
-      input map
-- [ ] **10** The settings menu inside the game, and the comfort settings
+| Stage | What it leaves | The checkpoint |
+| --- | --- | --- |
+| **0** | The intake and this plan | The owner agrees |
+| **1** | The plain game runs in a container | The owner says what it needed to run. Each workaround is a thing an installer or a readme has to carry |
+| **2** | The mod loads in the container and writes a log | The first line of the log is the build stamp that was just built, and a MinHook hook holds under Box86 and Wine |
+| **3** | The window is confirmed to fill the display with no chrome | The game already runs full screen in the container, so this is a check and not work. No title bar, and the pixel at the top left corner belongs to the game |
+| **4** | The XrApi client | One raw packet captured on the device, compared field by field with the tester. The owner presses each button and the log names the index that moved |
+| **5** | The sync pixel, last, 10 by 10 | Nothing to see. It is judged at stage 6 |
+| **6** | Mono 6DOF head tracking | It feels locked to the head. This is the big one, and nothing goes on top of it until it is right |
+| **7** | The cards, the panels and the cut scene window in the frame | They appear at the right place and the right depth |
+| **8** | The hands and the full input map | The owner confirms the map before it is built, and again on the device |
+| **9** | The settings menu inside the game, and the comfort settings | A tester changes a setting without leaving the headset |
+| **10** | Stereo | A measurement on the device: alternate eye rendering against side by side. Mono stays a shipping mode |
+
+### What mono defers
+
+Mono is one picture at the full size of the render, so each of these waits for
+stage 10 and none of it is in the way until then.
+
+- One sync square, not one for each half.
+- The cards and the panels at the full render width, so a card of 768 pixels
+  fits and no card has to appear twice.
+- No per eye field of view, so the angle of the game needs no change for a
+  half width render.
+- One scene walk a frame. The walk is nearly all of a frame, so the frame cost
+  of the port is the frame cost of the plain game until stage 10.
+- 1400x1400 fits mono as it is. Only side by side would want a width of 2800.
+
+Keep each of these in mind while the earlier stages are built, so stage 10 is
+a change in one place and not a change everywhere. The eye pictures of the
+parent mod already come from two walks with a camera between them, so the
+machinery for stereo stays in the mod. Mono uses one walk of it.
 
 ## 6. Features
 
@@ -221,12 +259,24 @@ with the shipped value as its default.
 **Goal.** The runtime can match the picture it captured to the pose that the
 picture was drawn for.
 
-**Approach.** Strip `WS_CAPTION`, `WS_THICKFRAME` and `WS_BORDER`, size to the
-display, and re-apply every frame because the engine rebuilds its window. Then
-echo the frame id of the last packet as red in a 10 by 10 square at the top
-left, drawn last, after the world and after the interface. Green stays 0. Blue
-stays 0 until alternate eye rendering needs it. Draw it in both halves under
-side by side.
+**The window.** The game runs full screen in the container and does not know
+that it is in one, so the picture already fills the display with no chrome and
+the top left pixel is the game's own. Check it, and then leave the window
+alone. A strip of `WS_CAPTION`, `WS_THICKFRAME` and `WS_BORDER` with a resize
+to the display, idempotent and called every frame, is the guard to add only if
+a check shows chrome. Do not add it first: a per frame change of the window
+fights an engine that has its own consistency tests.
+
+Note that the parent mod measured the game windowed, with
+`SetCooperativeLevel` and `DDSCL_NORMAL`. Full screen makes the window, the
+client and the render sizes agree, and it can take a different path to the
+primary surface. So confirm the present path in the container rather than
+assuming the one in `backend.md`.
+
+**The sync pixel.** Echo the frame id of the last packet as red in a 10 by 10
+square at the top left, drawn last, after the world and after the interface.
+Green stays 0. Blue stays 0 until alternate eye rendering needs it. One square
+in mono. Side by side needs one in each half, at stage 10.
 
 **What must not happen.** No rescale and no gamma correction of the value. The
 runtime learns the mapping from the values that it observes, and the
@@ -235,6 +285,7 @@ off, because the runtime samples exact bytes.
 
 **Acceptance.**
 - [ ] No title bar, and the game fills the view
+- [ ] The log says that the window, the client and the render sizes agree
 - [ ] Head tracking feels locked and not swimmy, judged at Feature 3
 
 ### Feature 3 - The head on the game camera, mono
@@ -271,6 +322,16 @@ the Direct3D 7 device of the game and see it in the frame.
 place that each eye needs. A quad in the room shows one time to each eye, so
 what is on a card must not become double.
 
+A card is also wider than an eye under side by side. A hint card is 768 by 320
+pixels (`kHintCardWidth` and `kHintCardHeight` in `xr_screen.h`), and side by
+side gives each eye 640 pixels of width at 1280x720 and 700 at 1400x1400. So
+the size of a card comes from the render width and not from a constant. The
+interface of the game
+has the opposite property: its art is at fixed pixel sizes, so it covers less
+of the view as a player raises the resolution of the container. One strength
+control, derived from the measured width against a reference width, is better
+than a raw value.
+
 ### Feature 5 - The input map
 
 **Goal.** Every control of the PCVR mod works from a Quest controller through
@@ -295,6 +356,13 @@ overrides a changed default, so say that plainly when a build is handed over.
 **Build.** `.\dev.ps1 build` configures, builds and runs the math tests. The
 build is 32 bit. After a change of a header in a build folder under a temp
 path, build with `-Clean`.
+
+**Where a build goes.** Two targets, and they have different jobs.
+
+| Target | What it is for |
+| --- | --- |
+| The game folder, `E:\tmp\Q3Mods\BnW` | A test on the PC. `.\dev.ps1` puts the mod there, and `.\dev.ps1 uninstall` takes it out again. The folder is in `local\game-path.txt` |
+| `Release\` in the root of the repo | The files that are ready to test on the device, for the copy to the headset. The folder is not tracked by git |
 
 **The build stamp.** Embed `__DATE__ __TIME__`, log it as line 1, and make the
 deploy refuse a binary older than the newest source file. Check that line
@@ -322,12 +390,14 @@ run has shown.
 | Risk | Likelihood | What we do about it |
 | --- | --- | --- |
 | A MinHook hook behaves differently under Box86 and Wine | Medium | Prove one hook on the device at Stage 2, before any feature rests on it |
-| The game does not accept a square or a large resolution without letterboxing | Medium | Report what it accepts at Stage 1. The resolution of the container is also the supersampling control, so this is not only a question of looks |
+| The game refuses 1400x1400, or letterboxes it | Medium | 1280x720 runs. Try the square size early, because the whole plan assumes it. The fall back is a 4:3 size of about the same height. Getting a game of this age to take an unusual mode is a recurring fight in these ports |
+| The aspect of one eye breaks the field of view under side by side | High | The game takes its vertical angle from the aspect of the render (`tan(v) = tan(h) * height / width`). Side by side gives each eye a half width, so 700 by 1400 at the square size. The angle of each eye comes from the size of its own half, and not from the size of the window |
 | The mod cannot submit its geometry through the Direct3D 7 device of the game | Medium | Prove one triangle before Feature 4 is built. The fall back is a copy of pixels into the surfaces of the CPU, which the cards already use |
 | Stereo costs too much on the mobile GPU | Medium | Mono ships. Alternate eye rendering gives depth at the cost of one walk a frame, which suits a draw call bound game |
 | The game restores its graphics settings by itself | Medium | Verify after a relaunch, not after a change. Games of this age are known for it |
 | A saved config on the device overrides a shipped default | High | Say it when a build is handed over, and name the key |
-| The engine fights a change of its window | Medium | Make the fix idempotent and call it every frame |
+| The engine fights a change of its window | Low | The game runs full screen in the container, so the mod needs no change of the window. Add one only if a check shows chrome, and make it idempotent |
+| The full screen path differs from the windowed path that the parent mod measured | Medium | Confirm the present path, the pointer map and the render size in the container. The parent mod ran the game windowed |
 | A value tuned on the desktop is wrong on the device | High | Measure each offset in the frame that it is used in. A correct value transfers. If it works only where it was found, the frame is wrong |
 | The simulation of the game runs at 10 Hz while the headset wants 72 | Known | The PCVR mod already deals with this. Read `bwvr/docs/backend.md`, "The simulation runs at 10 Hz" |
 
