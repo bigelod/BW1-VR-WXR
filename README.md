@@ -1,3 +1,17 @@
+Taking the Black & White VR mod from PCVR to **standalones** via **WinlatorXR XrAPI**
+
+Full credit to Buckzor, KrisTiasMusic, ullismidt-ship-it, hess-p, and SputnikKaputtnik for the original[ Black & White VR mod](https://github.com/BW-VR/BW1-VR) this is based on 
+
+Edited with Claude Code Opus 5 Medium for translation to the XrAPI
+
+Thanks to Luboš, GmoLargey, and others for their work on [WinlatorXR](https://github.com/WinlatorXR/WinlatorXR) and everyone else who had contributed to portable PC gaming via Winlator on other platforms
+
+> ** NOTE: This is a 'breaking changes' fork of the parent project, and future updates to it will be required in order to stay up to date with its PCVR equivalent **
+
+** Please do support the developers of the PCVR mod on Ko-Fi ( ko-fi.com/buckzor ) , this wouldn't be possible without their hard work! **
+
+# Original Black & White VR Mod ReadMe Below
+
 # Black & White VR Mod
 
 The original Black & White (2001) in VR. This is a mod for the real game, not
