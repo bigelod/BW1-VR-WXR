@@ -118,18 +118,23 @@ document previously said "make and model". Line 2 is a **product codename** -
 them. `opentrackWXR` carries such a mapping, commented out.
 
 Here's how Halo CE VR WinlatorXR (HWXR) handles it, for example:
->> if (hmdMake.empty())      hmdMake = "META";
->> else if (hmdMake == "OCULUS") hmdMake = "META";
->>
->> if (hmdModel.empty())     hmdModel = "QUEST 3";
->> 
->> else if (hmdModel == "EUREKA" || hmdModel == "PANTHER") hmdModel = "QUEST 3";
->> else if (hmdMake == "META") {
->>	 //SEACLIFF - Quest Pro - Untested, assuming hands upside down
->> 	 //HOLLYWOOD - Quest 2 - Works! Hands upside down...
->> 	 //MONTEREY - Quest 1 - Untested, unsupported
->>   hmdModel = "QUEST 2";
->> }
+
+***HMD DETECTION FOR UPSIDE DOWN HANDS DETECTION EXAMPLE***
+
+ if (hmdMake.empty())      hmdMake = "META";
+ else if (hmdMake == "OCULUS") hmdMake = "META";
+
+ if (hmdModel.empty())     hmdModel = "QUEST 3";
+ 
+ else if (hmdModel == "EUREKA" || hmdModel == "PANTHER") hmdModel = "QUEST 3";
+ else if (hmdMake == "META") {
+	 //SEACLIFF - Quest Pro - Untested, assuming hands upside down
+ 	 //HOLLYWOOD - Quest 2 - Works! Hands upside down...
+ 	 //MONTEREY - Quest 1 - Untested, unsupported
+   hmdModel = "QUEST 2";
+ }
+
+***NOTE***: This should also support a in-game VR menu setting for "Hands roll" TRUE/FALSE, or a handsfix.txt being added to the game or mod directory in order to allow a player to override detection, as some headsets report the hand controls as literally being upside down and/or backwards
 
 
 Line 7 is how a runtime advertises that binary packets are available; a client
@@ -177,16 +182,31 @@ Indexed from 0:
 |---|---|
 | 0-3 | left controller quaternion (x, y, z, w) |
 | 4-5 | left thumbstick (x, y) |
-| 6-8 | left controller position (x, y, z), metres |
+| 6-8 | left controller position (x, y, z), metres, **head-centred** |
 | 9-12 | right controller quaternion |
 | 13-14 | right thumbstick |
 | 15-17 | right controller position |
 | 18-21 | HMD quaternion |
-| 22-24 | HMD position |
+| 22-24 | HMD position, **head-centred** |
 | 25 | IPD, metres |
-| 26 | FOV x (tangent of the half-angle the runtime wants covered) |
-| 27 | FOV y |
+| 26 | FOV x, **degrees** the runtime wants covered |
+| 27 | FOV y, degrees |
 | 28 | **frame id / HMD_SYNC** - see section 5 |
+
+**[device] Floats 26-27 are degrees, not tangents of half-angles.** The
+Quest 3 capture in `SixDOFinatorCalibration/SamplePoseData.txt` carries
+`99.00 103.40`; a tangent of a half-angle is below 1 for any sane FOV. Shogo's
+client agrees - it converts the pair with `tan(fov * PI / 360)`, which only
+makes sense for a whole angle in degrees. Earlier revisions of this table said
+tangents, and a client that believes that gets a hand-waving-wide frustum.
+Note the two are **not** the same ratio as the panel: the runtime here asks
+for more vertically (103.4) than horizontally (99.0), because a headset panel
+is nearer square than 16:9.
+
+**[device] The positions are head-centred, so there is no floor in this
+space.** In the same capture the head sits at y = 0.006 and both hands at
+y = -0.229 / -0.240 - a palm's drop below it. See `TIPS.md`, "Get a capture
+before you write a sanity check".
 
 Then the bool string, then the HMD name. **Ignore trailing tokens** you do not
 recognise; the format gains fields at the end between versions, and a strict

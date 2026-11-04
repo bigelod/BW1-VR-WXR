@@ -312,6 +312,9 @@ Process3dEngineFn o_Process3dEngine = nullptr;
 bwvr::XrScreen* g_screen = nullptr;
 float g_eye_separation = 0.5f;  // world units between the eyes
 bool g_stereo_on = true;
+// stereo=0 of bwvr.ini: one walk of the scene for both eyes. The session
+// decides each frame, from the number of eyes that it has.
+bool g_mono = false;
 float g_ui_shift = 0.0f;        // pixels, see draw_hooks.cpp
 bool g_ui_adaptive = true;
 float g_ui_shift_max = 24.0f;
@@ -1205,11 +1208,35 @@ void FrameFunction(int index, void (*function)()) {
 
 void __fastcall Process3dEngineBody(void* self, void* unused) {
   PollHotkeys();
-  const bool to_headset = g_screen != nullptr && g_screen->running() &&
-                          g_screen->eyes() > 1;
+  const bool to_headset = g_screen != nullptr && g_screen->running();
   if (!g_enabled || !g_stereo_on || (!to_headset && !g_headless)) {
     o_Process3dEngine(self, unused);
     return;
+  }
+
+  // MONO, ONE WALK OF THE SCENE.
+  //
+  // A session of one eye gets one picture for both eyes, so the scene is
+  // walked one time. The two eye cameras are one camera at the head, the
+  // interface has no shift, and one walk of two eyes has nothing to do. A
+  // walk of the scene is 2 to 11 ms of a frame on this game, so the second
+  // walk is the largest cost there is to drop.
+  //
+  // Each piece of work of the mod that belongs to a frame and not to an eye
+  // runs in the pass of eye 0, which a frame of one eye has. The pieces that
+  // belong to eye 1 do not run at all.
+  const int passes = (to_headset && g_screen->eyes() < 2) ? 1 : 2;
+  const bool mono = passes < 2;
+  // The session decides, and the ini asked. A frame where the two disagree
+  // walks the scene a number of times that nobody asked for, so it says so.
+  if (mono != g_mono) {
+    static bool s_said = false;
+    if (!s_said) {
+      s_said = true;
+      ModLog("stereo       : the session has %d eye%s, and the ini asked for "
+             "%s. The session decides", g_screen->eyes(),
+             g_screen->eyes() == 1 ? "" : "s", g_mono ? "mono" : "two eyes");
+    }
   }
 
   float* m = Matrix();
@@ -1442,6 +1469,13 @@ void __fastcall Process3dEngineBody(void* self, void* unused) {
     }
   }
 
+  // Mono has one camera, so no separation of the eyes and no shift of the
+  // interface, also in a flat frame of the cut scene window.
+  if (mono) {
+    g_frame_separation = 0.0f;
+    g_ui_shift_used = 0.0f;
+  }
+
   float right[3];
   RightAxis(base, right);
 
@@ -1531,7 +1565,7 @@ void __fastcall Process3dEngineBody(void* self, void* unused) {
   // both eyes into the layers of its target.
   const bool pose_per_eye = g_head_tracking && !flat && !HeadCameraEnabled() &&
                             (to_headset || HeadPoseFakeOn());
-  const bool one_walk = OneWalkWanted() && !pose_per_eye &&
+  const bool one_walk = OneWalkWanted() && !pose_per_eye && !mono &&
                         !g_headless_grab &&
                         (!to_headset || GpuBridgeReady() || VkSceneDirect());
   bool one_walk_done = false;
@@ -1549,7 +1583,7 @@ void __fastcall Process3dEngineBody(void* self, void* unused) {
   const int send_mode = FrameSendMode();
   bwvr::LateFrame late = {};
   const bool profile = FrameProfileOn();
-  for (int eye = 0; eye < 2; ++eye) {
+  for (int eye = 0; eye < passes; ++eye) {
     // In one walk the right eye was drawn in the pass of the left eye.
     if (eye == 1 && one_walk_done && !one_walk_check) break;
     // Left eye is negative, right eye is positive, both about the camera the
@@ -1868,7 +1902,11 @@ void __fastcall Process3dEngineBody(void* self, void* unused) {
     // backend=vulkan the pixels of the target are not the picture of the
     // walk, so they do not go to the headset.
     const bool luma = EyeLumaOn();
-    const bool cpu_eye = to_headset && !sent && !VkSceneDirect();
+    // With the window as the output the picture is already where the runtime
+    // reads it, so the readback of the render target is work for nobody. It
+    // costs 2 to 3 ms of each pass.
+    const bool cpu_eye = to_headset && !sent && !VkSceneDirect() &&
+                         !g_screen->window_is_output();
     if (!one_walk_done &&
         (cpu_eye || g_headless_grab || want_capture || luma)) {
       // The surface stays locked while the VR layer reads it, so the frame is
@@ -2200,6 +2238,9 @@ void StereoSetFixes(bool freeze_time, bool move_camera_point) {
 
 void StereoSetHeadless(bool on) { g_headless = on; }
 
+// stereo=0 of bwvr.ini.
+void StereoSetMono(bool on) { g_mono = on; }
+
 void StereoSetProfile(int level) {
   g_profile_draws = level == 1 || level == 3;
   g_profile_states = level == 3;
@@ -2317,12 +2358,19 @@ bool StereoInstall(bwvr::XrScreen* screen, float separation,
     ModLog("stereo       : HEADLESS. Both passes run, nothing is sent to a "
            "headset. For measuring only.");
   }
-  ModLog("stereo       : on, eye separation %.3f world units, interface shift "
-         "%.1f px", g_eye_separation, g_ui_shift);
-  ModLog("stereo       : freeze time on second pass=%d, move camera point=%d",
-         g_freeze_time ? 1 : 0, g_move_camera_point ? 1 : 0);
-  ModLog("interface    : resting shift %.0f px, adaptive=%d, ceiling %.0f px",
-         g_ui_shift, g_ui_adaptive ? 1 : 0, g_ui_shift_max);
+  if (g_mono) {
+    ModLog("stereo       : stereo=0, mono. The scene is walked one time, the "
+           "two eye cameras are one camera at the head, the interface has no "
+           "shift, and the picture goes to both eyes of the headset. The eye "
+           "separation and the shift of the interface are not used");
+  } else {
+    ModLog("stereo       : on, eye separation %.3f world units, interface "
+           "shift %.1f px", g_eye_separation, g_ui_shift);
+    ModLog("stereo       : freeze time on second pass=%d, move camera "
+           "point=%d", g_freeze_time ? 1 : 0, g_move_camera_point ? 1 : 0);
+    ModLog("interface    : resting shift %.0f px, adaptive=%d, ceiling %.0f "
+           "px", g_ui_shift, g_ui_adaptive ? 1 : 0, g_ui_shift_max);
+  }
   ModLog("keys         : F11 makes the direction of your head straight ahead");
   if (g_test_keys) {
     ModLog("keys         : test keys are on. F12 saves both eye pictures. "

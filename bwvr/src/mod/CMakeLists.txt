@@ -1,5 +1,17 @@
+# The stamp of the build, written again for each build, so a log never names a
+# build that did not run. The second output is never written, which is what
+# makes the rule run each time. It is here and not in the top level
+# CMakeLists.txt because a custom command reaches only the targets of its own
+# directory.
+add_custom_command(
+    OUTPUT "${BWVR_STAMP_CPP}" "${CMAKE_BINARY_DIR}/generated/stamp-always"
+    COMMAND "${CMAKE_COMMAND}" "-DBWVR_STAMP_OUT=${BWVR_STAMP_CPP}"
+            -P "${BWVR_STAMP_SCRIPT}"
+    COMMENT "The stamp of this build")
+
 # bwvr, the mod itself. Builds the ddraw.dll the game loads.
 add_library(bwvr_mod SHARED
+    "${BWVR_STAMP_CPP}"
     ../proxy/ddraw_proxy.cpp
     mod_main.cpp
     vr_start.cpp
@@ -156,9 +168,5 @@ endif()
 # build_id.h, which CMake writes from the git commit.
 target_include_directories(bwvr_mod PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
-# The mod needs the OpenXR loader beside it in the game folder.
-add_custom_command(TARGET bwvr_mod POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${OPENXR_DLL}" "$<TARGET_FILE_DIR:bwvr_mod>"
-    COMMENT "Copying the 32 bit OpenXR loader beside the mod"
-)
+# The mod needs no DLL beside it. XrApi is two sockets of UDP and a few
+# files, so there is no OpenXR loader to ship.

@@ -29,7 +29,7 @@ in `CURRENT_STATUS.md`. This file is the plan and the decisions.
 | Real VR port or injection port | A real VR port. XrApi, 6DOF, poses straight into the game camera and the Hand |
 | XrApi version | 0.5. It is 0.4 plus the InputAPI listener at no cost, it is readable in a log, and the XrAPI UDP Tester simulates it |
 | Target headset | Quest 3 through WinlatorXR. Other headsets can work and are untested |
-| Presentation mode | Mono VR (`MODE_VR=1`, `MODE_3D=0`). One image to both eyes, with the head driving the camera. It is the mode that the port is built on and the first mode that it ships. Stereo comes later, as the last stage, from a measurement of alternate eye rendering against side by side |
+| Presentation mode | Mono VR (`MODE_VR=1`, `MODE_3D=0`). One image to both eyes, with the head driving the camera. The owner's choice, for the frame cost: the port does no stereo |
 | Ship a non-VR mode | To decide after the first measurement. It needs no camera work, so it stays available as a comfort and performance choice |
 | Container resolution | 1400x1400 is the size to plan for, and a 4:3 size of about the same height where the game refuses a square one. 1280x720 is the default of WinlatorXR, and the plain game runs at it with no change to any container setting. The mod must still read the render size each frame and work at any size, because the resolution belongs to the player and is the supersampling control |
 | Framing | The God view: the land at the height of the waist. Hands in view, 1:1 |
@@ -115,9 +115,9 @@ DirectDraw target and a write into an upload texture, 0.41 ms at 1280x720 and
 1.34 ms at 2560x1440, for each eye. This fork has no readback. The picture
 stays in the window that the runtime captures, so that cost is gone.
 
-What is left is the second scene walk. Side by side pays it, and mono and
-alternate eye rendering do not. That is why the mode is chosen from a
-measurement on the device and not from a preference.
+What is left is the scene walk, 2 to 11 ms of a frame on this game. A second
+walk for a second eye is the largest cost the port could carry, and it is the
+reason the port is mono.
 
 ### Decisions taken deliberately
 
@@ -130,10 +130,11 @@ Record these so no session relitigates them.
 | Wrappers | None. No dxwrapper, no dgVoodoo, no ReShade | Each is a layer inside Box86 and Wine. WinlatorXR can inject ReShade itself if a player wants it |
 | Process model | In the process of the game | No IPC, no second program to ship, start and reap |
 | Transport | XrApi 0.5, direct | OXRWXR and OpenComposite would carry the PCVR mod with no new code, and they cost heavily in performance for content that already needs a desktop GPU. A direct mod pays nothing for generality |
-| Presentation | Mono first, then measure side by side against alternate eye rendering | Mono isolates a camera fault from a stereo fault. The game is draw call bound, so one walk a frame can beat two |
-| The square resolution and the mode | 1400x1400 fits mono and alternate eye rendering. Side by side needs a width of 2800 for the same picture in each eye | Side by side cuts the width in two, so a square container gives each eye 700 by 1400. The recommended resolution follows the mode that the measurement picks |
+| Presentation | Mono. No stereo | The owner's choice, for the frame cost. A second eye is a second walk of the scene, which is the largest cost of a frame. Mono also keeps a camera fault apart from a stereo fault |
+| The square resolution | 1400x1400 fits mono as it is | One picture at the full size of the render, and the same picture in both eyes |
 | Supersampling | The resolution of the container | The runtime filters when it samples the window down. It needs no code |
 | Settings | A menu inside the game | Editing an ini on a headset is painful. `debug_menu.cpp` is the start |
+| The interface of the mod | On the screen, in about the middle third across and down | XrApi has no layer, and the mod does not build a head up display of its own. A card in the room was an OpenXR quad layer, and that is gone |
 | Frame cost | Measured on the device with Android and WinlatorXR tooling | The mod cannot see the compositor, the translation layers or the GPU, and that is where the time goes |
 | Feature scope of the first build | The full God view stays live | The owner's choice. The transport changes under a mod that works, so a fault in a feature is a fault in the transport until proven otherwise |
 
@@ -151,7 +152,8 @@ doc of its area then says what the mod does now.
 
 | Part | Files |
 | --- | --- |
-| The OpenXR session, the layers and the input | `src/vr/xr_screen.cpp`, `src/mod/vr_start.cpp` |
+| The OpenXR session, the layers and the input | `src/vr/xr_screen.cpp`. Out of the build. `src/vr/xr_screen_wxr.cpp` takes its place and speaks the XrApi |
+| The standalone test of the session | `src/xrtest/`. Out of the build: it showed a test pattern through an OpenXR session |
 | The bridge to Direct3D 11 and the shared textures | `src/mod/gpu_bridge.cpp`, `src/mod/frame_send.cpp` |
 | The Direct3D 9 backend and dxwrapper | `src/mod/d3d9_backend.cpp`, `bwvr/config/dxwrapper.reference.ini` |
 | The Vulkan renderer of the mod | `src/mod/vk_ddraw.cpp`, `vk_window.cpp`, `vk_fallback.cpp` |
@@ -160,12 +162,18 @@ doc of its area then says what the mod does now.
 | The x64 host for Steam Frame | `src/vr/bridge/` |
 | The launcher | `src/launcher/` |
 
-`XrScreen` is the seam to keep. Its header already states what the mod needs
-from a headset: an `EyeView` for each eye, a `HandInput` for each hand, the
-cards, the panels and the cut scene window. The new transport gives that same
-shape from a UDP packet, and the rest of the mod does not learn that OpenXR is
-gone. Where the shape cannot hold, because XrApi has no layers, the difference
-belongs in one place and not spread through the mod.
+`XrScreen` is the seam to keep, and the swap is done. Its header states what
+the mod needs from a headset: an `EyeView` for each eye, a `HandInput` for
+each hand, the cards, the panels and the cut scene window. Only 12 files of
+the mod name it, so one implementation carries the whole change and the rest
+of the mod does not learn that OpenXR is gone.
+
+`xr_screen_wxr.cpp` is that implementation. The methods that carry a picture
+to a runtime, the swapchains, the textures, the layers and the Direct3D 11
+device, do nothing in it and are marked as such. They are not a design: the
+picture reaches the headset because the runtime captures the window. Each one
+goes away with its callers as the mod learns to draw its cards into the frame
+of the game, at stage 7.
 
 ## 5. Milestones
 
@@ -183,29 +191,25 @@ are still open, and it is the only place that says so.
 | **4** | The XrApi client | One raw packet captured on the device, compared field by field with the tester. The owner presses each button and the log names the index that moved |
 | **5** | The sync pixel, last, 10 by 10 | Nothing to see. It is judged at stage 6 |
 | **6** | Mono 6DOF head tracking | It feels locked to the head. This is the big one, and nothing goes on top of it until it is right |
-| **7** | The cards, the panels and the cut scene window in the frame | They appear at the right place and the right depth |
+| **7** | The interface of the mod on the screen, in the middle third | It is readable in the headset, and nothing of it floats in the room |
 | **8** | The hands and the full input map | The owner confirms the map before it is built, and again on the device |
 | **9** | The settings menu inside the game, and the comfort settings | A tester changes a setting without leaving the headset |
-| **10** | Stereo | A measurement on the device: alternate eye rendering against side by side. Mono stays a shipping mode |
 
-### What mono defers
+### What mono gives
 
-Mono is one picture at the full size of the render, so each of these waits for
-stage 10 and none of it is in the way until then.
+Mono is one picture at the full size of the render, in both eyes.
 
 - One sync square, not one for each half.
-- The cards and the panels at the full render width, so a card of 768 pixels
-  fits and no card has to appear twice.
-- No per eye field of view, so the angle of the game needs no change for a
-  half width render.
-- One scene walk a frame. The walk is nearly all of a frame, so the frame cost
-  of the port is the frame cost of the plain game until stage 10.
-- 1400x1400 fits mono as it is. Only side by side would want a width of 2800.
+- The cards and the interface at the full render width, so a card of 768
+  pixels fits and nothing has to be drawn twice.
+- One field of view, the game's own for the shape of the render.
+- One scene walk a frame, so the frame cost of the port is the frame cost of
+  the plain game.
+- 1400x1400 fits as it is.
 
-Keep each of these in mind while the earlier stages are built, so stage 10 is
-a change in one place and not a change everywhere. The eye pictures of the
-parent mod already come from two walks with a camera between them, so the
-machinery for stereo stays in the mod. Mono uses one walk of it.
+What it gives up is depth. The land at the waist reads as a solid scene from
+the scale, the motion of the head and the hands at 1:1, and the frame cost of
+a second walk buys depth that this hardware cannot pay for.
 
 ## 6. Features
 
@@ -218,6 +222,12 @@ the owner on the device.
 **Goal.** The mod knows where the head and the hands are, which buttons are
 down, the interpupillary distance, the field of view that the runtime wants
 and the frame id.
+
+**Where it starts.** Adapt the client of the Shogo port,
+`game/XrApiUDP.cpp` in `Shogo-VR-WXR`. It is C++, 32 bit, in the process of
+the game, and it is proven on a Quest 3. It is the closest of the reference
+ports to this one. The scaffold in `Docs/MetaAI/` is a second reading of the
+same protocol and not the start.
 
 **What must be proven first.** That a packet arrives at all inside a
 container. The `version` file decides it, it is read one time at startup, and
@@ -244,6 +254,32 @@ an unrecognised value gives total silence and no error.
    nothing, because the mode is only ever read from a packet that the mod
    sends.
 9. Log the raw packet verbatim every few seconds, behind the verbose flag.
+
+**Send the field of view that the game drew with, every frame.** Not a
+setting, and not 104.5. The runtime maps the frame onto the display with those
+two angles, so a wrong pair makes the world move at a different rate from the
+head, and by a different rate in pitch than in yaw. In a headset that reads as
+drift: rotations that do not come back to where they started. A port in this
+family sent a square 104.5 pair while the engine drew 99.3 by 67.0, and the
+symptom was described as the axes drifting.
+
+The game asks for 1.2217 radians, 70.0 degrees, one time each frame through
+`LH3DTech::ChangeFov`, and its vertical angle follows the render aspect:
+`tan(v) = tan(h) * height / width`. So the mod takes both angles from the
+frame it drew, in degrees. At a square resolution the two are equal, and at
+1280x720 they are not, which is exactly why this cannot be a constant.
+
+**The capture is the ground.** A synthetic pose holds what the protocol is
+believed to say, and a capture holds what it does.
+`Docs/general_wxr/SixDOFinatorCalibration/SamplePoseData.txt` is one packet
+from a Quest 3, and the math checks replay it. Its numbers are in
+`CURRENT_STATUS.md`. A second capture, with a button held and the hands apart,
+would settle the button table as well.
+
+**What is built.** `bwvr/src/vr/xrapi_packet.h` holds the parse, and
+`bwvr/test/controller_math/xrapi_packet_checks.h` holds its checks. The parse
+is a pure header, so the socket, the handshake files and the outbound packet
+are what is left of this feature.
 
 **Settings.** One ini key for the version and one for the verbose log, each
 with the shipped value as its default.
@@ -273,10 +309,18 @@ client and the render sizes agree, and it can take a different path to the
 primary surface. So confirm the present path in the container rather than
 assuming the one in `backend.md`.
 
-**The sync pixel.** Echo the frame id of the last packet as red in a 10 by 10
-square at the top left, drawn last, after the world and after the interface.
-Green stays 0. Blue stays 0 until alternate eye rendering needs it. One square
-in mono. Side by side needs one in each half, at stage 10.
+**The sync pixel.** The frame id of the last packet is the red of a square of
+10 by 10 pixels at the top left, drawn last, after the world and after the
+interface. Green is 0, and blue is 0: the blue carries an eye flag that only
+alternate eye rendering uses. One square.
+
+The last place in the frame is the present itself, so the square goes in
+there (`present_watch.cpp`, and the packing of the colour in
+`bwvr/src/vr/sync_pixel.h`). A flip chain takes it in the back buffer before
+the flip, and a window takes it on the primary surface after the copy, at the
+corner where the copy put the picture. The colour is packed with the masks of
+that surface, so a surface of 16 bits works too, with 5 bits of red: it holds
+32 of the 256 frame ids, and the log says so. `sync_pixel=0` draws no square.
 
 **What must not happen.** No rescale and no gamma correction of the value. The
 runtime learns the mapping from the values that it observes, and the
@@ -300,33 +344,64 @@ flip the results for the handedness of the engine, rather than mirroring the
 quaternion. Put the scale from metres to game units in one constant.
 Orientation first, position after.
 
+**The space is head centred.** XrApi positions are not floor relative. In a
+Quest 3 capture the head is at y of 0.006 and both hands at y of -0.23, a
+palm's drop below it. There is no floor in that space. So the height of the
+land in the God view, and the 1:1 place of each hand, come from the offset to
+the head and not from a height above a floor. Write no check that assumes a
+floor: a port in this family gated its recentre behind "the head is at least
+0.5 m up", the gate never passed on hardware, and the hands collapsed onto the
+head.
+
+Three facts from other ports, each of which cost a session there:
+
+- **The quaternion of a packet passes through unchanged.** Negating its Z
+  component, to match a reading of the handedness section, reversed the roll
+  of the head: a lean to the left rolled the view to the right. Yaw and pitch
+  did not show it, because a pure yaw or pitch quaternion has Z of 0. Flip the
+  axes after the rotation, not the quaternion.
+- **The recentre takes the yaw only.** Keep the inverse of the yaw of the head
+  at recentre time, and not the whole orientation, or a recentre with a tilted
+  head tilts the world.
+- **Test a compensation against an input that moves.** A correction that
+  forgets a frame is exactly right at the origin and wrong everywhere else, so
+  a test at one still pose tests the one case that cannot fail. The scripted
+  controller has a sweep for this (`sweep` in `FakeControllerSettings`). Use a
+  period that no other motion in the test shares.
+
 **Acceptance.**
 - [ ] The world stays still when the owner holds his head still
 - [ ] A lean moves the view the right way and the right amount
 - [ ] The horizon is level
 
-### Feature 4 - The layers into the frame
+### Feature 4 - The interface on the screen, and the hands in the frame
 
-**Goal.** The hands, the highlights, the arcs, the hint cards, the subtitles,
-the ring, the panels and the cut scene window all appear, in one picture.
+**Goal.** The hands, the highlights and the arcs appear in the world, and the
+interface of the mod appears on the screen.
+
+**The interface is on the screen, not in the room.** No card floats in the
+room, no panel hangs beside a wrist, and the cut scene has no window with
+walls. XrApi has no layer to put one in, and the mod is not going to build a
+head up display of its own. Anything that the mod must show goes on the
+screen, in about the middle third of the display across and down, where a
+headset shows it clearly.
+
+That removes the whole layer design of the PCVR mod rather than porting it.
+`StageCard`, `StagePanelQuad`, `StageWindow`, `SetPanelQuads` and
+`EnablePanel` do nothing now, and they go away with their callers.
 
 **Can it be done at all.** Yes, through the game's own path. The game submits
 screen space vertices, so the mod transforms its own geometry on the CPU and
-submits it the same way. The cards are already CPU pixels, and the surfaces of
-the game are in CPU memory, so a card is a copy of pixels.
+submits it the same way. The pictures of the cards are already drawn on the
+CPU, so one goes to the screen as a copy of pixels.
 
 **What must be proven first.** That the mod can submit one triangle through
 the Direct3D 7 device of the game and see it in the frame.
 
-**Edge cases.** A card has to appear in both halves under side by side, at the
-place that each eye needs. A quad in the room shows one time to each eye, so
-what is on a card must not become double.
-
-A card is also wider than an eye under side by side. A hint card is 768 by 320
-pixels (`kHintCardWidth` and `kHintCardHeight` in `xr_screen.h`), and side by
-side gives each eye 640 pixels of width at 1280x720 and 700 at 1400x1400. So
-the size of a card comes from the render width and not from a constant. The
-interface of the game
+**Edge cases.** One picture, so one copy. A hint card is 768 by 320 pixels
+(`kHintCardWidth` and `kHintCardHeight` in `xr_screen.h`), which is wider
+than a render of 700 pixels. So the size of a card comes from the render
+width and not from a constant. The interface of the game
 has the opposite property: its art is at fixed pixel sizes, so it covers less
 of the view as a player raises the resolution of the container. One strength
 control, derived from the measured width against a reference width, is better
@@ -344,6 +419,22 @@ handed player, and then never test that flag again for anything spatial.
 Haptics are a duration in frames and not an amplitude, and a value of 0 does
 not clear them, so decay the number that the mod sends.
 
+**The roll of the hands needs an override.** Meta controllers report the hands
+rolled by 180 degrees, and a port in this family confirmed that a Quest 3 does
+it too, so key the correction off the **make** on line 1 of `system` and not
+off the model on line 2. Some headsets are also reported backwards, so give a
+yaw trim beside the roll.
+
+Detection is a guess about hardware that we do not have. Ship the guess with
+an override that a player reaches without a console: a `handsfix.txt` beside
+the game, read with plain `fopen`, costs twenty lines and saves one round trip
+to the device for each wrong guess. Also put it in the menu of the game.
+Default to `META` and `QUEST 3` when `system` is missing.
+
+This kind of fault is visible and not measurable. A rolled hand makes no log
+line wrong, so no amount of instrumentation finds it. It is one of the cases
+that needs a screenshot from the device.
+
 ### Feature 6 - The menu inside the game
 
 **Goal.** A tester changes any setting without leaving the headset.
@@ -351,18 +442,45 @@ not clear them, so decay the number that the mod sends.
 **Approach.** `debug_menu.cpp` is the start. A saved config on the device
 overrides a changed default, so say that plainly when a build is handed over.
 
+**Version the settings before they need it.** A saved ini on a tester's device
+outlives the default that made it, and a tester is exactly the person who
+holds a stale value. A port in this family changed a sentinel from `-1` to
+`auto`, every device that had run the build before read `-1` as minus one
+degree, and the fault looked as though it had never been corrected. So keep a
+`cfg_version` key, raise it when a default changes in a way that an old value
+defeats, and migrate at startup. Change only a value that equals the old
+default, because dropping a tuning that a player chose is worse than the fault
+being corrected. Log each value that changed.
+
 ## 7. Verification
 
 **Build.** `.\dev.ps1 build` configures, builds and runs the math tests. The
 build is 32 bit. After a change of a header in a build folder under a temp
 path, build with `-Clean`.
 
-**Where a build goes.** Two targets, and they have different jobs.
+**Where a build goes.** `bwvr\tools\wxr\deploy.ps1` builds through `dev.ps1`,
+runs the guard, and stages the bundle.
 
 | Target | What it is for |
 | --- | --- |
-| The game folder, `E:\tmp\Q3Mods\BnW` | A test on the PC. `.\dev.ps1` puts the mod there, and `.\dev.ps1 uninstall` takes it out again. The folder is in `local\game-path.txt` |
-| `Release\` in the root of the repo | The files that are ready to test on the device, for the copy to the headset. The folder is not tracked by git |
+| `Release\BnW-VR-WXR` | The files that are ready to test on the device: `ddraw.dll`, `bwvr.ini` and a readme that says what to test and what to send back. Copy the folder beside `runblack.exe` on the device. The script writes nothing else under `Release` |
+| The game folder, `E:\tmp\Q3Mods\BnW` | A test on the PC. `deploy.ps1 -Game` also puts the files there, and it keeps the `ddraw.dll` that was there. `.\dev.ps1 uninstall` takes the mod out again. The folder is in `local\game-path.txt` |
+
+**The guard.** The script refuses to stage a `ddraw.dll` that is older than
+the newest source file, and it names both times. Do not work around it. A test
+of a stale build looks like a change that does nothing, and it costs a
+session.
+
+**Which build ran.** The first line of `bwvr.log` carries the version, the
+build id and the stamp of the build:
+
+```
+Black & White VR Mod 1.2.0 (build abc1234, built 2026-11-03 14:05:59)
+```
+
+The id names the commit. The stamp names the build, because two builds of one
+commit share the id. The deploy script prints the stamp to look for. Check it
+before any report from the device is interpreted.
 
 **The build stamp.** Embed `__DATE__ __TIME__`, log it as line 1, and make the
 deploy refuse a binary older than the newest source file. Check that line
@@ -391,9 +509,7 @@ run has shown.
 | --- | --- | --- |
 | A MinHook hook behaves differently under Box86 and Wine | Medium | Prove one hook on the device at Stage 2, before any feature rests on it |
 | The game refuses 1400x1400, or letterboxes it | Medium | 1280x720 runs. Try the square size early, because the whole plan assumes it. The fall back is a 4:3 size of about the same height. Getting a game of this age to take an unusual mode is a recurring fight in these ports |
-| The aspect of one eye breaks the field of view under side by side | High | The game takes its vertical angle from the aspect of the render (`tan(v) = tan(h) * height / width`). Side by side gives each eye a half width, so 700 by 1400 at the square size. The angle of each eye comes from the size of its own half, and not from the size of the window |
 | The mod cannot submit its geometry through the Direct3D 7 device of the game | Medium | Prove one triangle before Feature 4 is built. The fall back is a copy of pixels into the surfaces of the CPU, which the cards already use |
-| Stereo costs too much on the mobile GPU | Medium | Mono ships. Alternate eye rendering gives depth at the cost of one walk a frame, which suits a draw call bound game |
 | The game restores its graphics settings by itself | Medium | Verify after a relaunch, not after a change. Games of this age are known for it |
 | A saved config on the device overrides a shipped default | High | Say it when a build is handed over, and name the key |
 | The engine fights a change of its window | Low | The game runs full screen in the container, so the mod needs no change of the window. Add one only if a check shows chrome, and make it idempotent |

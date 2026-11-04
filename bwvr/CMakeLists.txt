@@ -49,6 +49,19 @@ endif()
 configure_file("${CMAKE_SOURCE_DIR}/src/common/build_id.h.in"
                "${CMAKE_BINARY_DIR}/generated/build_id.h" @ONLY)
 
+# The time of the build, also for the first line of bwvr.log. The id names the
+# commit, and the stamp says when these files were built, so two builds of one
+# commit are not the same build to a reader of a log.
+#
+# The rule that writes it is in src/mod/CMakeLists.txt, beside the target that
+# compiles it: a custom command reaches only the targets of its own directory.
+# This write is for the configure, so the file exists before the first build.
+set(BWVR_STAMP_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/build_stamp.cmake")
+set(BWVR_STAMP_CPP "${CMAKE_BINARY_DIR}/generated/build_stamp.cpp")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" "-DBWVR_STAMP_OUT=${BWVR_STAMP_CPP}"
+            -P "${BWVR_STAMP_SCRIPT}")
+
 # The code of other projects, in the folder third_party of the repo. See
 # third_party/README.md. A build from a git worktree gives the folder of the
 # main checkout here: -DBWVR_THIRD_PARTY="C:/.../third_party". Do not put a
@@ -73,7 +86,8 @@ target_include_directories(minhook PUBLIC "${MINHOOK_DIR}/include")
 
 add_subdirectory(src/probe)
 add_subdirectory(src/vr)
-add_subdirectory(src/xrtest)
+# src/xrtest showed a test pattern through an OpenXR session, and there is no
+# session now. The picture of this fork goes out in the window of the game.
 add_subdirectory(src/mod)
 add_subdirectory(src/launcher)
 add_subdirectory(test/controller_math)

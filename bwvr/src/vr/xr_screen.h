@@ -485,6 +485,24 @@ class XrScreen {
   void SetRenderPose(int index, const float position[3],
                      const float orientation[4]);
 
+  // The runtime of the headset captures the window of the game, so no
+  // picture goes to the session: the window and the sync pixel in its corner
+  // are the whole output. A readback of the frame and a submit would cost
+  // time a frame and give nothing, and a skip of the copy to the window
+  // would leave the runtime with no picture at all.
+  bool window_is_output() const { return true; }
+
+  // THE RED OF THE SYNC PIXEL for this frame: the frame id of the last
+  // packet, with no change at all. The runtime learns the colour space from
+  // the values that it sees, so the mod must not scale or gamma correct this
+  // number. The mod draws it as a 10 by 10 square at the top left, last.
+  float SyncValue() const;
+
+  // The size of one eye, in pixels of the render. The field of view that goes
+  // out each frame comes from it, because the vertical angle of the game
+  // follows the shape of the render.
+  void SetRenderSize(int width, int height);
+
   // True once after the headset recentered its own space, for example from
   // the Quest menu, when the poses of this frame are in the new space. The
   // mod keeps its own origin, so it has to recenter too. See head_pose.cpp.
@@ -524,6 +542,9 @@ class XrScreen {
   RemoteScreen* remote_ = nullptr;
   struct Impl;
   Impl* impl_;
+  // The first packet into the log, one time, when there is a log that keeps
+  // it: the tries for a headset are quiet after the first one.
+  void SayFirstPacket();
   bool BuildFrame();   // the layers of the frame
   void FinishFrame();  // after xrEndFrame, on the frame thread
   void FinishLate();   // after the copies of a late frame, on the frame thread

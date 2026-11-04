@@ -53,6 +53,7 @@ $Product   = 'Black & White VR Mod'
 $Launcher  = $Product + '.exe'
 $Marker    = 'bwvr-dev-install.txt'
 $Backup    = 'ddraw.dll.before-bwvr'
+$CMakeExe  = ''            # Get-CMake fills this in on its first call.
 
 function Say([string]$Text) { Write-Host ('== ' + $Text) -ForegroundColor Cyan }
 function Note([string]$Text) { Write-Host ('   ' + $Text) }
@@ -103,11 +104,40 @@ function Assert-Tool([string]$Name, [string]$Help) {
     }
 }
 
+# The mod needs CMake 3.20 or later, for -S and -B. An older CMake can be
+# first on the PATH, and then the error names the build folder as the source
+# folder, which reads as a fault of the repo. So take the CMake of Visual
+# Studio 2022 when the one on the PATH is too old.
+function Get-CMake {
+    if ($script:CMakeExe) { return $script:CMakeExe }
+    $onPath = Get-Command cmake -ErrorAction SilentlyContinue
+    if ($onPath) {
+        $text = (& $onPath.Source --version | Select-Object -First 1)
+        if ($text -match 'cmake version (\d+)\.(\d+)') {
+            if ([int]$Matches[1] -gt 3 -or ([int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 20)) {
+                $script:CMakeExe = $onPath.Source
+                return $script:CMakeExe
+            }
+            Note "the cmake on the PATH is $($Matches[1]).$($Matches[2]), and the mod needs 3.20"
+        }
+    }
+    $vs = Get-ChildItem -Path 'C:\Program Files\Microsoft Visual Studio\2022\*\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' -ErrorAction SilentlyContinue |
+          Select-Object -First 1
+    if ($vs) {
+        Note ('cmake: ' + $vs.FullName)
+        $script:CMakeExe = $vs.FullName
+        return $script:CMakeExe
+    }
+    Stop-Dev ("No CMake of 3.20 or later was found. Install Visual Studio 2022`n" +
+        "with the workload 'Desktop development with C++', or use the`n" +
+        '"Developer PowerShell for VS 2022".')
+}
+
 function Invoke-Configure {
-    Assert-Tool 'cmake' 'Install CMake 3.20 or later, or use the "Developer PowerShell for VS 2022".'
     Assert-Tool 'git' 'Install Git for Windows.'
+    $cmake = Get-CMake
     Say 'Configure'
-    & cmake -S $Bwvr -B $BuildDir -A Win32 | Select-Object -Last 3 | ForEach-Object { Note $_ }
+    & $cmake -S $Bwvr -B $BuildDir -A Win32 | Select-Object -Last 3 | ForEach-Object { Note $_ }
     if ($LASTEXITCODE -ne 0) {
         Stop-Dev ("CMake could not configure the build.`n" +
             "The mod needs Visual Studio 2022 (or its Build Tools) with the`n" +
@@ -120,7 +150,7 @@ function Invoke-Build {
     Say 'Build'
     $buildArgs = @('--build', $BuildDir, '--config', 'Release')
     if ($Clean) { $buildArgs += '--clean-first' }
-    $out = & cmake @buildArgs 2>&1
+    $out = & (Get-CMake) @buildArgs 2>&1
     $code = $LASTEXITCODE
     $out | Where-Object { "$_" -match ' error |warning C|FAILED|->' } | ForEach-Object { Note ("$_".Trim()) }
     if ($code -ne 0) { Stop-Dev 'The build failed.' }

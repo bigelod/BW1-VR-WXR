@@ -1529,6 +1529,13 @@ bool g_fitted = false;
 // The client size the fit asked for, and how many times it has been put
 // right since. The game's Options menu can come and go after the fit, and a
 // menu counted but not there makes the client taller than asked.
+// window_fit=0 leaves the window as the game made it.
+//
+// On WinlatorXR the window is the output: the runtime captures it, and it
+// must fill the display, with the top left pixel the game's own, or the sync
+// pixel is never read. So the mod must not reshape it there.
+bool g_fit_window = true;
+
 int g_fit_w = 0;
 int g_fit_h = 0;
 int g_fit_corrections = 0;
@@ -1552,12 +1559,15 @@ void CorrectFit(HWND window, int have_w, int have_h) {
 int g_want_w = 0;
 int g_want_h = 0;
 
+void PointerMapSetFitWindow(bool on) { g_fit_window = on; }
+
 void PointerMapSetWindowSize(int width, int height) {
   g_want_w = width;
   g_want_h = height;
 }
 
 void FitWindowOnce(HWND window) {
+  if (!g_fit_window) return;
   RECT client;
   if (!GetClientRect(window, &client)) return;
   const int have_w = client.right - client.left;

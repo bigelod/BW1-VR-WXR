@@ -21,9 +21,11 @@
 #include "MinHook.h"
 #include "../common/bw_addresses.h"
 #include "../common/exe_check.h"
+#include "../common/build_stamp.h"
 #include "../common/version.h"
 #include "build_id.h"
 #include "../vr/xr_screen.h"
+#include "../vr/sync_pixel.h"
 #include "controllers.h"
 #include "debug_menu.h"
 #include "frame_profile.h"
@@ -70,6 +72,7 @@ void FrameTimeSetOptions(int real, int test_frame, int readers_frame,
 void DrawProbeArm(bool on, int frames);
 void DrawProbeDelay(int frames);
 void StereoSetHeadless(bool on);
+void StereoSetMono(bool on);
 void StereoSetProfile(int level);
 void StereoSetTestKeys(bool on);
 void StereoSetCaptureInterval(int seconds);
@@ -149,6 +152,10 @@ void OverlaySetEnabled(bool on);
 void PresentWatchSetEnabled(bool on);
 void PresentWatchInstall();
 void PresentWatchSkipDesktop(bool on);
+void PresentWatchSyncPixel(bool on);
+void PresentWatchSyncRed(int red);
+void PresentWatchSyncCounts(unsigned long long* squares,
+                            unsigned long long* fails);
 void PassGuardSetOptions(bool skip_hand, bool skip_physics);
 void PassGuardSetSkipPrepare(bool on);
 void PassGuardInstall();
@@ -170,6 +177,7 @@ void UiDepthSetSubtitleDegrees(int degrees);
 void PointerMapSetOptions(bool scale, bool clip, bool leave_cursor);
 void PointerMapSetRenderSize(int width, int height);
 void PointerMapSetWindowSize(int width, int height);
+void PointerMapSetFitWindow(bool on);
 void PointerMapRelease();
 void PointerMapSetRebuild(bool on);
 // cursor_trace.cpp
@@ -363,6 +371,10 @@ int g_anisotropy = 16;
 int g_profile = 0;
 bool g_headless_grab = false;
 bool g_skip_desktop = true;
+// sync_pixel of bwvr.ini. The red square of the frame id at the top left
+// corner of the present, which tells the runtime of the headset which frame
+// it captured. 0 draws no square, as the PCVR mod does.
+bool g_sync_pixel = true;
 int g_capture_seconds = 0;
 // Things inside Process3dEngine that step state rather than draw. They
 // must run once a frame, not once an eye. See pass_guard.cpp.
@@ -401,6 +413,9 @@ bool g_cursor_trace = false;
 // A test key of the desktop runs. See exit_test.cpp.
 bool g_registry_test_guard = false;
 int g_window_w = 0;
+// window_fit=0 does not reshape the window of the game. The window is the
+// output on WinlatorXR, so it must fill the display.
+bool g_window_fit = true;
 int g_window_h = 0;
 bool g_hand_anchored = true;
 // Moving around. The launcher stores the two choices as an index.
@@ -784,6 +799,7 @@ void ReadSettings() {
   if (g_profile < 0 || g_profile > 3) g_profile = 1;
   g_skip_desktop =
       GetPrivateProfileIntA("bwvr", "skip_desktop_present", 1, path) != 0;
+  g_sync_pixel = GetPrivateProfileIntA("bwvr", "sync_pixel", 1, path) != 0;
   g_capture_seconds =
       GetPrivateProfileIntA("bwvr", "capture_every_seconds", 0, path);
   g_skip_hand_pass2 =
@@ -1042,6 +1058,7 @@ void ReadSettings() {
       GetPrivateProfileIntA("bwvr", "pointer_leave_cursor", 0, path) != 0;
   g_cursor_trace = GetPrivateProfileIntA("bwvr", "cursor_trace", 0, path) != 0;
   g_window_w = GetPrivateProfileIntA("bwvr", "window_width", 0, path);
+  g_window_fit = GetPrivateProfileIntA("bwvr", "window_fit", 1, path) != 0;
   g_window_h = GetPrivateProfileIntA("bwvr", "window_height", 0, path);
   // Off is the control for the anchor test: the Hand should then move
   // when the head turns, which is what makes the test mean something.
@@ -1740,8 +1757,10 @@ void StartVrStep() {
   if (!FrameSourceSize(&width, &height)) return;
 
   // The hooks go in once, on the first frame that has a render target, so a
-  // headless run and a retrying VR run both get them.
-  if (!g_hooks_installed && g_stereo) {
+  // headless run and a retrying VR run both get them. They go in for a mono
+  // session too (stereo=0): there the scene is walked one time, and each
+  // other thing the mod does is the same.
+  if (!g_hooks_installed && (g_stereo || g_vr_enabled)) {
     g_hooks_installed = true;
     TextureFilterSetOptions(g_filter_survey, g_force_mips);
     TextureFilterInstall(g_anisotropy);
@@ -1898,6 +1917,7 @@ void StartVrStep() {
     UiDepthSetUiScale(g_ui_scale_pct);
     UiDepthSetCinemaBars(g_cinema_bars);
     PointerMapSetWindowSize(g_window_w, g_window_h);
+    PointerMapSetFitWindow(g_window_fit);
     PointerMapSetOptions(g_pointer_scale, g_pointer_clip,
                          g_pointer_leave_cursor);
     HeadCameraSetHandAnchored(g_hand_anchored);
@@ -1912,6 +1932,7 @@ void StartVrStep() {
     OneWalkSetMarks(g_one_walk_marks, g_one_walk_marks_test_frame);
     if (g_one_walk) OneWalkSetWanted(true);
     StereoSetHeadless(g_stereo_headless);
+    StereoSetMono(!g_stereo);
     StereoSetProfile(g_profile);
     StereoSetTestKeys(g_test_keys);
     StereoSetCaptureInterval(g_capture_seconds);
@@ -2396,8 +2417,21 @@ void __cdecl h_FinishFrame() {
   // below. If the headset sleeps or the runtime goes away, the monitor is the
   // only output there is. Leaving the skip latched on would freeze the window
   // and make the game look hung with no way back.
+  //
+  // The window is the output with XrApi, so the copy to it always runs. The
+  // runtime reads the window, and a skip would give it nothing.
+  //
+  // The frame id of this frame goes with it: the present draws it as the red
+  // of the square at the corner. A frame with no session has no id, and the
+  // square then holds 0.
+  PresentWatchSyncPixel(g_sync_pixel && g_screen != nullptr &&
+                        g_screen->running() &&
+                        g_screen->window_is_output());
+  PresentWatchSyncRed(
+      g_screen != nullptr ? sync_pixel::Red(g_screen->SyncValue()) : 0);
   PresentWatchSkipDesktop(g_skip_desktop && g_screen != nullptr &&
-                          g_screen->running());
+                          g_screen->running() &&
+                          !g_screen->window_is_output());
   // backend=vulkan: the first frame that the session with Vulkan presented
   // deletes the file of the fall back (vk_fallback.h).
   if (VkFallbackWaiting() && g_screen != nullptr && g_screen->vulkan() &&
@@ -2418,6 +2452,11 @@ void __cdecl h_FinishFrame() {
   if (IntroFinishFrame()) return;
 
   if (g_screen == nullptr || !g_screen->running()) return;
+
+  // XrApi: the game's own present carries the frame, so this path has no
+  // picture to send. It stops here, before the readback of the render and
+  // the submit, which together cost 2 to 3 ms of each frame.
+  if (g_screen->window_is_output()) return;
 
   // Process3dEngine runs the whole scene twice for stereo, and this hook is
   // inside it, so the mono path has to stand aside while that happens.
@@ -2624,8 +2663,10 @@ void OpenLog() {
 
   SYSTEMTIME now;
   GetLocalTime(&now);
-  ModLog("%s %s (build %s)", BWVR_PRODUCT_NAME, BWVR_VERSION_TEXT,
-         BWVR_BUILD_ID);
+  // The stamp is here so that a report from a device names the build that
+  // ran. The id alone cannot do it: two builds of one commit share the id.
+  ModLog("%s %s (build %s, built %s)", BWVR_PRODUCT_NAME, BWVR_VERSION_TEXT,
+         BWVR_BUILD_ID, bw::kBuildStamp);
   ModLog("%04d-%02d-%02d %02d:%02d:%02d", now.wYear, now.wMonth, now.wDay,
          now.wHour, now.wMinute, now.wSecond);
   if (kept) {

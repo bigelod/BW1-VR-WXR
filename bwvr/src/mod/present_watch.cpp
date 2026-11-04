@@ -33,6 +33,7 @@
 
 #include "MinHook.h"
 #include "../common/bw_addresses.h"
+#include "../vr/sync_pixel.h"
 #include "blt_copy_math.h"
 #include "frame_profile.h"
 #include "render_thread.h"
@@ -370,6 +371,99 @@ bool TextureCopy(IDirectDrawSurface7* self, const RECT* destination,
   return true;
 }
 
+// THE RED SYNC PIXEL (sync_pixel.h, and Docs/general_wxr/XRAPI_V0_4_DESC.md
+// section 5).
+//
+// The runtime of the headset captures the window of the game on a thread of
+// its own. The red of the pixel at the top left corner of the picture tells
+// it which frame it has, so that it maps the picture with the pose that drew
+// it. Without the pixel it cannot tell a new frame from one it showed
+// already, and it maps each picture with the newest pose: the world then
+// swims when the head turns, by an amount that changes.
+//
+// So the square is the last thing that goes into the frame, and here is the
+// last place in the frame: the present itself.
+//
+//   a flip chain (a full screen game) flips the back buffer onto the
+//   display, so the square goes into that back buffer before the flip,
+//   a window copies the picture onto the primary surface, so the square goes
+//   onto the primary surface after the copy, at the corner of the client
+//   area of the window, which is where the copy put the picture.
+//
+// The colour is packed with the masks of the surface, so each layout of bits
+// works. A surface of 16 bits has 5 bits of red and holds 32 of the 256
+// frame ids, which the log says.
+bool g_sync_on = true;
+int g_sync_red = 0;
+uint64_t g_sync_squares = 0;
+uint64_t g_sync_fails = 0;
+bool g_sync_said = false;
+
+void SyncSquare(IDirectDrawSurface7* surface, LONG x, LONG y,
+                const char* where) {
+  if (surface == nullptr) return;
+  DDSURFACEDESC2 desc;
+  if (!DescOf(surface, &desc)) {
+    ++g_sync_fails;
+    return;
+  }
+  const DDPIXELFORMAT& pf = desc.ddpfPixelFormat;
+  if ((pf.dwFlags & DDPF_RGB) == 0 || pf.dwRBitMask == 0) {
+    ++g_sync_fails;
+    return;
+  }
+  RECT r;
+  r.left = x;
+  r.top = y;
+  r.right = x + sync_pixel::kSquare;
+  r.bottom = y + sync_pixel::kSquare;
+  if (r.right > static_cast<LONG>(desc.dwWidth)) {
+    r.right = static_cast<LONG>(desc.dwWidth);
+  }
+  if (r.bottom > static_cast<LONG>(desc.dwHeight)) {
+    r.bottom = static_cast<LONG>(desc.dwHeight);
+  }
+  if (r.left < 0 || r.top < 0 || r.left >= r.right || r.top >= r.bottom) {
+    ++g_sync_fails;
+    return;
+  }
+  DDBLTFX fx;
+  ZeroMemory(&fx, sizeof(fx));
+  fx.dwSize = sizeof(fx);
+  fx.dwFillColor = sync_pixel::Pack(g_sync_red, 0, 0, pf.dwRBitMask,
+                                    pf.dwGBitMask, pf.dwBBitMask);
+  // The original call, so this fill takes none of the paths of the hook.
+  const HRESULT hr = o_Blt(surface, &r, nullptr, nullptr,
+                           DDBLT_COLORFILL | DDBLT_WAIT, &fx);
+  if (FAILED(hr)) {
+    ++g_sync_fails;
+    return;
+  }
+  ++g_sync_squares;
+  if (!g_sync_said) {
+    g_sync_said = true;
+    const int bits = sync_pixel::MaskBits(pf.dwRBitMask);
+    ModLog("sync pixel   : sync_pixel=1. The frame id of the headset is the "
+           "red of a square of %d by %d pixels at %ld %ld of the %s, drawn "
+           "last. The surface has %d bits and %d of red, so it holds %d of "
+           "the 256 ids",
+           static_cast<int>(r.right - r.left),
+           static_cast<int>(r.bottom - r.top), r.left, r.top, where,
+           static_cast<int>(pf.dwRGBBitCount), bits, 1 << bits);
+  }
+}
+
+// The back buffer of a flip chain: the surface that the flip puts on the
+// display.
+IDirectDrawSurface7* BackBufferOf(IDirectDrawSurface7* primary) {
+  DDSCAPS2 caps;
+  ZeroMemory(&caps, sizeof(caps));
+  caps.dwCaps = DDSCAPS_BACKBUFFER;
+  IDirectDrawSurface7* back = nullptr;
+  if (FAILED(primary->GetAttachedSurface(&caps, &back))) return nullptr;
+  return back;
+}
+
 HRESULT WINAPI h_Blt(IDirectDrawSurface7* self, LPRECT destination,
                      IDirectDrawSurface7* source, LPRECT source_rect,
                      DWORD flags, LPDDBLTFX fx) {
@@ -413,6 +507,14 @@ HRESULT WINAPI h_Blt(IDirectDrawSurface7* self, LPRECT destination,
         static_cast<uint32_t>(destination->right - destination->left);
     if (width > g_widest_blt) g_widest_blt = width;
   }
+  // A window: this copy is the picture going to the display. The square goes
+  // on after it, at the corner where the copy put the picture, so nothing
+  // covers it.
+  if (g_sync_on && SUCCEEDED(hr) && IsPrimary(self)) {
+    const LONG x = destination != nullptr ? destination->left : 0;
+    const LONG y = destination != nullptr ? destination->top : 0;
+    SyncSquare(self, x, y, "window");
+  }
   return hr;
 }
 
@@ -420,6 +522,17 @@ HRESULT WINAPI h_Flip(IDirectDrawSurface7* self, IDirectDrawSurface7* target,
                       DWORD flags) {
   DrawMergeFlush();
   RenderThreadSync();
+  // A flip chain: the back buffer goes on the display now, so the square
+  // goes into it before the flip. Nothing of the game draws after this.
+  if (g_sync_on) {
+    IDirectDrawSurface7* back = BackBufferOf(self);
+    if (back != nullptr) {
+      SyncSquare(back, 0, 0, "back buffer");
+      back->Release();
+    } else {
+      ++g_sync_fails;
+    }
+  }
   LARGE_INTEGER before, after;
   QueryPerformanceCounter(&before);
   const HRESULT hr = o_Flip(self, target, flags);
@@ -432,6 +545,22 @@ HRESULT WINAPI h_Flip(IDirectDrawSurface7* self, IDirectDrawSurface7* target,
 }  // namespace
 
 void PresentWatchSetEnabled(bool on) { g_enabled = on; }
+
+// sync_pixel of bwvr.ini. 0 draws no square, which is the behavior of the
+// PCVR mod: there the frame goes to the runtime through a swapchain, and
+// nobody looks at the window of the game.
+void PresentWatchSyncPixel(bool on) { g_sync_on = on; }
+
+// The frame id of the newest packet, as the red of the next present. The
+// frame thread sets it one time a frame.
+void PresentWatchSyncRed(int red) { g_sync_red = red; }
+
+// How many squares went in, and how many could not.
+void PresentWatchSyncCounts(unsigned long long* squares,
+                            unsigned long long* fails) {
+  if (squares != nullptr) *squares = g_sync_squares;
+  if (fails != nullptr) *fails = g_sync_fails;
+}
 
 // Turned on once the mod is sending frames to a headset, and off again if it
 // stops, so the monitor never goes dark while it is the only output.
@@ -548,6 +677,13 @@ void PresentWatchReport(uint64_t frames) {
            "and %llu failed", g_texture_copies, g_texture_copy_fails);
     g_texture_copies = 0;
     g_texture_copy_fails = 0;
+  }
+  if (g_sync_on || g_sync_squares + g_sync_fails > 0) {
+    ModLog("sync pixel   : %llu squares of the frame id went into the "
+           "presents of this window, %llu could not. The last id was %d",
+           g_sync_squares, g_sync_fails, g_sync_red);
+    g_sync_squares = 0;
+    g_sync_fails = 0;
   }
   if (g_test_rate > 0) {
     ModLog("present      : test_frame_rate=%d: %llu frames waited for their "
